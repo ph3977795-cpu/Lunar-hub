@@ -1,0 +1,489 @@
+lunar hub v2
+-- ══════════════════════════════════════════════════════════════
+--              ✦ LUNAR HUB ✦  |  PEDRIN XITS
+--   AIMLOCK + RAINBOW + GODMODE + ESP FIX + MINIBAR + TRUE GHOST
+-- ══════════════════════════════════════════════════════════════
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace        = game:GetService("Workspace")
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
+
+local hasDrawing = Drawing ~= nil
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ CONFIGS ]
+-- ══════════════════════════════════════════════════════════════
+local RainbowConfig = {
+    Enabled = true, Speed = 5, Saturation = 0.8, Value = 1,
+    Tracers = true, Box = true, BulletTrace = true, BulletLife = 0.25
+}
+local AimConfig = {
+    Enabled = false, FOV = 120, TargetPart = "Head",
+    MaxDistance = 500, Smoothness = 0.35, ShowFOV = true
+}
+local ESPConfig = { Enabled = false, ShowBox = true, ShowLines = true,
+    ShowNames = true, Color = Color3.fromRGB(128, 0, 255), MaxDistance = 500 }
+local FlyConfig    = { Enabled = false, Speed = 50 }
+local SpeedConfig  = { Enabled = false, Speed = 60 }
+local SpinConfig   = { Enabled = false, Speed = 30 }
+local TPConfig     = { Enabled = false }
+
+-- 👻 GHOST CONFIG (NOVO MÉTODO)
+local GhostConfig = {
+    Enabled         = false,
+    Height          = 10,
+    PlatformOffset  = 3.5,
+    WalkAnimR15     = "rbxassetid://507777826",
+    WalkAnimR6      = "rbxassetid://180426354"
+}
+
+-- 🛡 GODMODE CONFIG
+local GodConfig = {
+    Enabled = false, KeepMaxHealth = true, InstaHeal = true,
+    AntiFling = true, AntiFallDamage = true, AntiBan = true,
+    AntiBanMinWait = 0.35, AntiBanMaxWait = 0.85, ForceFieldClone = false,
+    GodThread = nil, CharConn = nil, HealthConn = nil
+}
+
+local TeleportLocation = Vector3.new(2634.3, 40.6, 536.3)
+
+local function getRainbowColor()
+    if not RainbowConfig.Enabled then return ESPConfig.Color end
+    local hue = (tick() % RainbowConfig.Speed) / RainbowConfig.Speed
+    return Color3.fromHSV(hue, RainbowConfig.Saturation, RainbowConfig.Value)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ ESTADO ]
+-- ══════════════════════════════════════════════════════════════
+local ESPObjects, ActiveTraces = {}, {}
+local FlyThread, SpeedThread, SpinThread, ESPThread, aimThread, tpThread
+local FOVCircle
+local CurrentAimTarget = nil
+local CurrentAimPart   = nil
+local origWalkSpeed, origJumpPower, origMaxHealth = 16, 50, 100
+
+-- Ghost state
+local isGhost = false
+local fakeModel, ghostPlatform = nil, nil
+local ghostNoclipLoop = nil
+local walkTrack = nil
+local camLockConnection = nil
+local ghostNoclipEnabled = false
+local changedParts = {}
+local targetY = 0
+local ghostOverlapParams = OverlapParams.new()
+ghostOverlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- ══════════════════════════════════════════════════════════════
+--                    [ RAINBOW BULLET TRACE ]
+-- ══════════════════════════════════════════════════════════════
+local function drawBulletTrace(targetPos)
+    if not RainbowConfig.BulletTrace or not hasDrawing then return end
+    local trace = Drawing.new("Line")
+    trace.Visible      = true
+    trace.From         = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+    trace.To           = Vector2.new(targetPos.X, targetPos.Y)
+    trace.Thickness    = 2
+    trace.Transparency = 1
+    trace.Color        = getRainbowColor()
+    table.insert(ActiveTraces, trace)
+    task.spawn(function()
+        local start = tick()
+        while tick() - start < RainbowConfig.BulletLife do
+            trace.Color        = getRainbowColor()
+            trace.Transparency = 1 - ((tick() - start) / RainbowConfig.BulletLife)
+            RunService.RenderStepped:Wait()
+        end
+        pcall(function() trace:Remove() end)
+        for i, t in ipairs(ActiveTraces) do
+            if t == trace then table.remove(ActiveTraces, i) break end
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                    [ 👻 TRUE GHOST SYSTEM ]
+-- ══════════════════════════════════════════════════════════════
+local function ghostStartNoclip()
+    if ghostNoclipEnabled then return end
+    ghostNoclipEnabled = true
+    table.clear(changedParts)
+    ghostNoclipLoop = RunService.Stepped:Connect(function()
+        if not ghostNoclipEnabled then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        ghostOverlapParams.FilterDescendantsInstances = {char, fakeModel, ghostPlatform}
+        local parts = Workspace:GetPartBoundsInBox(root.CFrame, Vector3.new(4, 6, 4), ghostOverlapParams)
+        for _, part in ipairs(parts) do
+            if part:IsA("BasePart") and part.Parent and part ~= ghostPlatform and part.CanCollide then
+                if changedParts[part] == nil then changedParts[part] = true end
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+local function ghostStopNoclip()
+    ghostNoclipEnabled = false
+    if ghostNoclipLoop then ghostNoclipLoop:Disconnect() ghostNoclipLoop = nil end
+    for part, _ in pairs(changedParts) do
+        if part and part.Parent and part ~= ghostPlatform then part.CanCollide = true end
+    end
+    table.clear(changedParts)
+end
+
+local function ghostSetupFakeCharacter(model)
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+    humanoid.AutoRotate = false
+    humanoid.PlatformStand = true
+    humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+    for _, state in ipairs({
+        Enum.HumanoidStateType.FallingDown, Enum.HumanoidStateType.Ragdoll,
+        Enum.HumanoidStateType.Jumping, Enum.HumanoidStateType.Climbing,
+        Enum.HumanoidStateType.Swimming, Enum.HumanoidStateType.Freefall,
+        Enum.HumanoidStateType.Flying
+    }) do
+        pcall(function() humanoid:SetStateEnabled(state, false) end)
+    end
+    for _, obj in ipairs(model:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            obj.Anchored = true
+            obj.CanCollide = false
+            obj.CanTouch = false
+            obj.CanQuery = false
+            obj.Massless = true
+        elseif obj:IsA("Script") or obj:IsA("LocalScript") then
+            obj:Destroy()
+        end
+    end
+    local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+    local animation = Instance.new("Animation")
+    animation.Name = "LunarGhostWalk"
+    animation.AnimationId = (humanoid.RigType == Enum.HumanoidRigType.R15)
+        and GhostConfig.WalkAnimR15 or GhostConfig.WalkAnimR6
+    local success, track = pcall(function() return animator:LoadAnimation(animation) end)
+    if success and track then
+        walkTrack = track
+        walkTrack.Looped = true
+        walkTrack.Priority = Enum.AnimationPriority.Movement
+    end
+    return true
+end
+
+local function ghostUpdateFakeAnimation(realHumanoid)
+    if not walkTrack then return end
+    local moving = realHumanoid.MoveDirection.Magnitude > 0.05
+    if moving then
+        if not walkTrack.IsPlaying then walkTrack:Play(0.12) end
+        walkTrack:AdjustSpeed(math.clamp(realHumanoid.WalkSpeed / 16, 0.5, 2))
+    else
+        if walkTrack.IsPlaying then walkTrack:Stop(0.12) end
+    end
+end
+
+local function ghostUpdateCameraAndGhost()
+    if not isGhost or not fakeModel or not LocalPlayer.Character then return end
+    local realChar = LocalPlayer.Character
+    local realRoot = realChar:FindFirstChild("HumanoidRootPart")
+    if not realRoot or not ghostPlatform then return end
+    local fakeHumanoid = fakeModel:FindFirstChildOfClass("Humanoid")
+    if fakeHumanoid and Camera.CameraSubject ~= fakeHumanoid then
+        Camera.CameraSubject = fakeHumanoid
+    end
+    local currentPos = realRoot.Position
+    realRoot.AssemblyLinearVelocity = Vector3.new(realRoot.AssemblyLinearVelocity.X, 0, realRoot.AssemblyLinearVelocity.Z)
+    ghostPlatform.CFrame = CFrame.new(currentPos.X, targetY - GhostConfig.PlatformOffset, currentPos.Z)
+    fakeModel:PivotTo(CFrame.new(currentPos.X, targetY + GhostConfig.Height, currentPos.Z) * realRoot.CFrame.Rotation)
+    local realHumanoid = realChar:FindFirstChildOfClass("Humanoid")
+    if realHumanoid then ghostUpdateFakeAnimation(realHumanoid) end
+end
+
+local function ghostStop()
+    if not isGhost then return end
+    isGhost = false
+    GhostConfig.Enabled = false
+    RunService:UnbindFromRenderStep("LunarGhostCameraFix")
+    if camLockConnection then camLockConnection:Disconnect() camLockConnection = nil end
+    ghostStopNoclip()
+    if walkTrack then pcall(function() walkTrack:Stop(0.1) end) walkTrack = nil end
+    local realChar = LocalPlayer.Character
+    local realRoot = realChar and realChar:FindFirstChild("HumanoidRootPart")
+    local realHumanoid = realChar and realChar:FindFirstChildOfClass("Humanoid")
+    if realHumanoid then realHumanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true) end
+    if realRoot and fakeModel then
+        local fakeRoot = fakeModel:FindFirstChild("HumanoidRootPart")
+        if fakeRoot then realRoot.CFrame = fakeRoot.CFrame end
+    end
+    if realChar then
+        for _, obj in ipairs(realChar:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.Transparency = 0
+                obj.CanTouch = true
+                obj.CanQuery = true
+                obj.CanCollide = true
+            end
+        end
+        if realHumanoid then Camera.CameraSubject = realHumanoid end
+    end
+    if fakeModel then fakeModel:Destroy() fakeModel = nil end
+    if ghostPlatform then ghostPlatform:Destroy() ghostPlatform = nil end
+end
+
+local function ghostStart()
+    local realChar = LocalPlayer.Character
+    if not realChar then return end
+    local realRoot = realChar:FindFirstChild("HumanoidRootPart")
+    local realHumanoid = realChar:FindFirstChildOfClass("Humanoid")
+    if not realRoot or not realHumanoid then return end
+    isGhost = true
+    GhostConfig.Enabled = true
+    realHumanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+    local startCFrame = realRoot.CFrame
+    targetY = startCFrame.Y - GhostConfig.Height
+    ghostPlatform = Instance.new("Part")
+    ghostPlatform.Name = "LunarGhostPlatform"
+    ghostPlatform.Size = Vector3.new(10, 1, 10)
+    ghostPlatform.Anchored = true
+    ghostPlatform.CanCollide = true
+    ghostPlatform.CanTouch = false
+    ghostPlatform.CanQuery = false
+    ghostPlatform.Transparency = 1
+    ghostPlatform.Parent = Workspace
+    realChar.Archivable = true
+    for _, desc in ipairs(realChar:GetDescendants()) do desc.Archivable = true end
+    local success, clonedChar = pcall(function() return realChar:Clone() end)
+    if not success or not clonedChar then ghostStop() return end
+    fakeModel = clonedChar
+    fakeModel.Name = "LunarGhostVisual"
+    for _, obj in ipairs(fakeModel:GetDescendants()) do
+        if obj:IsA("Script") or obj:IsA("LocalScript") then obj:Destroy() end
+    end
+    fakeModel.Parent = Workspace
+    local fakeRoot = fakeModel:FindFirstChild("HumanoidRootPart")
+    local fakeHumanoid = fakeModel:FindFirstChildOfClass("Humanoid")
+    if not fakeRoot or not fakeHumanoid then ghostStop() return end
+    fakeModel.PrimaryPart = fakeRoot
+    if not ghostSetupFakeCharacter(fakeModel) then ghostStop() return end
+    fakeModel:PivotTo(startCFrame)
+    for _, obj in ipairs(realChar:GetDescendants()) do
+        if obj:IsA("BasePart") then obj.Transparency = 1 end
+    end
+    ghostStartNoclip()
+    realRoot.CFrame = CFrame.new(startCFrame.X, targetY, startCFrame.Z) * startCFrame.Rotation
+    Camera.CameraSubject = fakeHumanoid
+    camLockConnection = Camera:GetPropertyChangedSignal("CameraSubject"):Connect(function()
+        if isGhost and fakeHumanoid and Camera.CameraSubject ~= fakeHumanoid then
+            Camera.CameraSubject = fakeHumanoid
+        end
+    end)
+    RunService:BindToRenderStep("LunarGhostCameraFix", Enum.RenderPriority.Last.Value, ghostUpdateCameraAndGhost)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                    [ 🛡 GODMODE ANTI-BAN ]
+-- ══════════════════════════════════════════════════════════════
+local function godProtectCharacter(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    pcall(function()
+        origWalkSpeed = hum.WalkSpeed
+        origJumpPower = hum.JumpPower
+        origMaxHealth = hum.MaxHealth
+    end)
+    if GodConfig.AntiFallDamage then
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        end)
+    end
+    if GodConfig.AntiFling then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function() hrp.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0) end)
+        end
+    end
+    if GodConfig.ForceFieldClone then
+        local existing = char:FindFirstChildOfClass("ForceField")
+        if not existing then
+            local ff = Instance.new("ForceField") ff.Visible = false ff.Parent = char
+        end
+    end
+    if GodConfig.KeepMaxHealth then
+        pcall(function()
+            if hum.MaxHealth < 100000 then hum.MaxHealth = math.huge end
+        end)
+    end
+end
+
+local function godHealTick()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if GodConfig.InstaHeal then
+        pcall(function()
+            if hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
+        end)
+    end
+    if GodConfig.AntiFling then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function()
+                if hrp.AssemblyLinearVelocity.Magnitude > 200 then
+                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                end
+            end)
+        end
+    end
+end
+
+local function godLoop()
+    while GodConfig.Enabled do
+        godHealTick()
+        if GodConfig.AntiBan then
+            task.wait(GodConfig.AntiBanMinWait + math.random() * (GodConfig.AntiBanMaxWait - GodConfig.AntiBanMinWait))
+        else
+            RunService.Heartbeat:Wait()
+        end
+    end
+end
+
+local function godOnChar(char)
+    godProtectCharacter(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        if GodConfig.HealthConn then GodConfig.HealthConn:Disconnect() end
+        GodConfig.HealthConn = hum.HealthChanged:Connect(function(h)
+            if not GodConfig.Enabled then return end
+            if h < hum.MaxHealth then pcall(function() hum.Health = hum.MaxHealth end) end
+        end)
+    end
+end
+
+local function godStart()
+    if GodConfig.Enabled then return end
+    GodConfig.Enabled = true
+    local char = LocalPlayer.Character
+    if char then godOnChar(char) end
+    GodConfig.CharConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+        if GodConfig.Enabled then godOnChar(newChar) end
+    end)
+    GodConfig.GodThread = task.spawn(godLoop)
+end
+
+local function godStop()
+    if not GodConfig.Enabled then return end
+    GodConfig.Enabled = false
+    if GodConfig.GodThread then task.cancel(GodConfig.GodThread) GodConfig.GodThread = nil end
+    if GodConfig.CharConn then GodConfig.CharConn:Disconnect() GodConfig.CharConn = nil end
+    if GodConfig.HealthConn then GodConfig.HealthConn:Disconnect() GodConfig.HealthConn = nil end
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                hum.MaxHealth = origMaxHealth > 0 and origMaxHealth or 100
+                hum.Health = math.min(hum.Health, hum.MaxHealth)
+                hum.WalkSpeed = origWalkSpeed
+                hum.JumpPower = origJumpPower
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            end)
+        end
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ UI LIBRARY ]
+-- ══════════════════════════════════════════════════════════════
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LunarHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 520, 0, 340)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -170)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+local MainCorner = Instance.new("UICorner") MainCorner.CornerRadius = UDim.new(0, 8) MainCorner.Parent = MainFrame
+local MainStroke = Instance.new("UIStroke") MainStroke.Color = Color3.fromRGB(128, 0, 255) MainStroke.Thickness = 1.5 MainStroke.Parent = MainFrame
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 32)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+local TitleCorner = Instance.new("UICorner") TitleCorner.CornerRadius = UDim.new(0, 8) TitleCorner.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -90, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "✦ LUNAR HUB ✦  |  Pedrin Xits"
+Title.TextColor3 = Color3.fromRGB(240, 240, 240)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 13
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 26, 0, 22)
+MinBtn.Position = UDim2.new(1, -60, 0, 5)
+MinBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+MinBtn.Text = "–"
+MinBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 16
+MinBtn.BorderSizePixel = 0
+MinBtn.Parent = TitleBar
+local MinCorner = Instance.new("UICorner") MinCorner.CornerRadius = UDim.new(0, 4) MinCorner.Parent = MinBtn
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 26, 0, 22)
+CloseBtn.Position = UDim2.new(1, -30, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
+CloseBtn.Text = "×"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 16
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Parent = TitleBar
+local CloseCorner = Instance.new("UICorner") CloseCorner.CornerRadius = UDim.new(0, 4) CloseCorner.Parent = CloseBtn
+
+-- MiniBar
+local MiniBar = Instance.new("TextButton")
+MiniBar.Name = "MiniBar"
+MiniBar.Size = UDim2.new(0, 180, 0, 32)
+MiniBar.Position = UDim2.new(0.5, -90, 0.5, -16)
+MiniBar.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+MiniBar.Text = "✦ LUNAR HUB ✦"
+MiniBar.TextColor3 = Color3.fromRGB(240, 240, 240)
+MiniBar.Font = Enum.Font.GothamBold
+MiniBar.TextSize = 12
+MiniBar.BorderSizePixel = 0
+MiniBar.Visible = false
+MiniBar.Active = true
+MiniBar.Parent = ScreenGui
+local MiniCorner = Instance.new("UICorner") MiniCorner.CornerRadius = UDim.new(0, 8) MiniCorner.Parent = MiniBar
+local MiniStroke = Instance.new("UIStroke") MiniStroke.Color = Color3.fromRGB(128, 0, 255) MiniStroke.Thickness = 1.5 MiniStroke.Parent = MiniBar
+
+MiniBar.MouseEnter:Connect(function()
+    MiniBar.BackgroundColor3 = Color3.fromRGB(30, 20, 50)
+    MiniStroke.Color = Color3.fromRGB(255, 0, 127)
+end)
+MiniBar.MouseLeave:Connect(function()
+    MiniBar.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+  
