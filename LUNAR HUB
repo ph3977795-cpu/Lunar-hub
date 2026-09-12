@@ -1,0 +1,542 @@
+-- ══════════════════════════════════════════════════════════════
+--              ✦ LUNAR HUB ✦  |  PEDRIN XITS
+--    AIMLOCK + RAINBOW BULLETS + GODMODE + ESP FIX + MINIBAR
+-- ══════════════════════════════════════════════════════════════
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
+
+local hasDrawing = Drawing ~= nil
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ CONFIGS ]
+-- ══════════════════════════════════════════════════════════════
+local RainbowConfig = {
+    Enabled = true, Speed = 5, Saturation = 0.8, Value = 1,
+    Tracers = true, Box = true, BulletTrace = true, BulletLife = 0.25
+}
+local AimConfig = {
+    Enabled = false, FOV = 120, TargetPart = "Head",
+    MaxDistance = 500, Smoothness = 0.35, ShowFOV = true
+}
+local ESPConfig = { Enabled = false, ShowBox = true, ShowLines = true,
+    ShowNames = true, Color = Color3.fromRGB(128, 0, 255), MaxDistance = 500 }
+local FlyConfig    = { Enabled = false, Speed = 50 }
+local SpeedConfig  = { Enabled = false, Speed = 60 }
+local SpinConfig   = { Enabled = false, Speed = 30 }
+local TPConfig     = { Enabled = false }
+local GhostConfig  = { Enabled = false }
+
+-- 🛡 GODMODE CONFIG
+local GodConfig = {
+    Enabled           = false,
+    KeepMaxHealth     = true,
+    InstaHeal         = true,
+    AntiFling         = true,
+    AntiFallDamage    = true,
+    AntiBan           = true,
+    AntiBanMinWait    = 0.35,
+    AntiBanMaxWait    = 0.85,
+    ForceFieldClone   = false,
+    GodThread         = nil,
+    CharConn          = nil,
+    HealthConn        = nil
+}
+
+local TeleportLocation = Vector3.new(2634.3, 40.6, 536.3)
+
+local function getRainbowColor()
+    if not RainbowConfig.Enabled then return ESPConfig.Color end
+    local hue = (tick() % RainbowConfig.Speed) / RainbowConfig.Speed
+    return Color3.fromHSV(hue, RainbowConfig.Saturation, RainbowConfig.Value)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ ESTADO ]
+-- ══════════════════════════════════════════════════════════════
+local ESPObjects, ActiveTraces = {}, {}
+local FlyThread, SpeedThread, SpinThread, ESPThread, aimThread, tpThread
+local FOVCircle
+local CurrentAimTarget = nil
+local CurrentAimPart   = nil
+local origWalkSpeed, origJumpPower, origMaxHealth = 16, 50, 100
+
+-- ══════════════════════════════════════════════════════════════
+--                    [ RAINBOW BULLET TRACE ]
+-- ══════════════════════════════════════════════════════════════
+local function drawBulletTrace(targetPos)
+    if not RainbowConfig.BulletTrace or not hasDrawing then return end
+    local trace = Drawing.new("Line")
+    trace.Visible      = true
+    trace.From         = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+    trace.To           = Vector2.new(targetPos.X, targetPos.Y)
+    trace.Thickness    = 2
+    trace.Transparency = 1
+    trace.Color        = getRainbowColor()
+    table.insert(ActiveTraces, trace)
+
+    task.spawn(function()
+        local start = tick()
+        while tick() - start < RainbowConfig.BulletLife do
+            trace.Color        = getRainbowColor()
+            trace.Transparency = 1 - ((tick() - start) / RainbowConfig.BulletLife)
+            RunService.RenderStepped:Wait()
+        end
+        pcall(function() trace:Remove() end)
+        for i, t in ipairs(ActiveTraces) do
+            if t == trace then table.remove(ActiveTraces, i) break end
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                    [ 🛡 GODMODE ANTI-BAN ]
+-- ══════════════════════════════════════════════════════════════
+local function godProtectCharacter(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    pcall(function()
+        origWalkSpeed = hum.WalkSpeed
+        origJumpPower = hum.JumpPower
+        origMaxHealth = hum.MaxHealth
+    end)
+
+    if GodConfig.AntiFallDamage then
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        end)
+    end
+
+    if GodConfig.AntiFling then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function()
+                hrp.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+            end)
+        end
+    end
+
+    if GodConfig.ForceFieldClone then
+        local existing = char:FindFirstChildOfClass("ForceField")
+        if not existing then
+            local ff = Instance.new("ForceField")
+            ff.Visible = false
+            ff.Parent = char
+        end
+    end
+
+    if GodConfig.KeepMaxHealth then
+        pcall(function()
+            if hum.MaxHealth < 100000 then hum.MaxHealth = math.huge end
+        end)
+    end
+end
+
+local function godHealTick()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    if GodConfig.InstaHeal then
+        pcall(function()
+            if hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
+        end)
+    end
+
+    if GodConfig.AntiFling then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function()
+                if hrp.AssemblyLinearVelocity.Magnitude > 200 then
+                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                end
+            end)
+        end
+    end
+end
+
+local function godLoop()
+    while GodConfig.Enabled do
+        godHealTick()
+        if GodConfig.AntiBan then
+            local waitTime = GodConfig.AntiBanMinWait +
+                math.random() * (GodConfig.AntiBanMaxWait - GodConfig.AntiBanMinWait)
+            task.wait(waitTime)
+        else
+            RunService.Heartbeat:Wait()
+        end
+    end
+end
+
+local function godOnChar(char)
+    godProtectCharacter(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        if GodConfig.HealthConn then GodConfig.HealthConn:Disconnect() end
+        GodConfig.HealthConn = hum.HealthChanged:Connect(function(h)
+            if not GodConfig.Enabled then return end
+            if h < hum.MaxHealth then
+                pcall(function() hum.Health = hum.MaxHealth end)
+            end
+        end)
+    end
+end
+
+local function godStart()
+    if GodConfig.Enabled then return end
+    GodConfig.Enabled = true
+    local char = LocalPlayer.Character
+    if char then godOnChar(char) end
+    GodConfig.CharConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+        if GodConfig.Enabled then godOnChar(newChar) end
+    end)
+    GodConfig.GodThread = task.spawn(godLoop)
+end
+
+local function godStop()
+    if not GodConfig.Enabled then return end
+    GodConfig.Enabled = false
+    if GodConfig.GodThread then task.cancel(GodConfig.GodThread) GodConfig.GodThread = nil end
+    if GodConfig.CharConn then GodConfig.CharConn:Disconnect() GodConfig.CharConn = nil end
+    if GodConfig.HealthConn then GodConfig.HealthConn:Disconnect() GodConfig.HealthConn = nil end
+
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                hum.MaxHealth = origMaxHealth > 0 and origMaxHealth or 100
+                hum.Health = math.min(hum.Health, hum.MaxHealth)
+                hum.WalkSpeed = origWalkSpeed
+                hum.JumpPower = origJumpPower
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            end)
+        end
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+--                       [ UI LIBRARY ]
+-- ══════════════════════════════════════════════════════════════
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LunarHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ─── PAINEL PRINCIPAL ───
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 520, 0, 340)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -170)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+local MainCorner = Instance.new("UICorner") MainCorner.CornerRadius = UDim.new(0, 8) MainCorner.Parent = MainFrame
+local MainStroke = Instance.new("UIStroke") MainStroke.Color = Color3.fromRGB(128, 0, 255) MainStroke.Thickness = 1.5 MainStroke.Parent = MainFrame
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 32)
+TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+local TitleCorner = Instance.new("UICorner") TitleCorner.CornerRadius = UDim.new(0, 8) TitleCorner.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -90, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "✦ LUNAR HUB ✦  |  Pedrin Xits"
+Title.TextColor3 = Color3.fromRGB(240, 240, 240)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 13
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 26, 0, 22)
+MinBtn.Position = UDim2.new(1, -60, 0, 5)
+MinBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+MinBtn.Text = "–"
+MinBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 16
+MinBtn.BorderSizePixel = 0
+MinBtn.Parent = TitleBar
+local MinCorner = Instance.new("UICorner") MinCorner.CornerRadius = UDim.new(0, 4) MinCorner.Parent = MinBtn
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 26, 0, 22)
+CloseBtn.Position = UDim2.new(1, -30, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
+CloseBtn.Text = "×"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 16
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Parent = TitleBar
+local CloseCorner = Instance.new("UICorner") CloseCorner.CornerRadius = UDim.new(0, 4) CloseCorner.Parent = CloseBtn
+
+-- ══════════════════════════════════════════════════════════════
+--              [ 🎯 MINIBAR - FICA VISÍVEL QUANDO MINIMIZADO ]
+-- ══════════════════════════════════════════════════════════════
+local MiniBar = Instance.new("TextButton")
+MiniBar.Name = "MiniBar"
+MiniBar.Size = UDim2.new(0, 180, 0, 32)
+MiniBar.Position = UDim2.new(0.5, -90, 0.5, -16)
+MiniBar.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+MiniBar.Text = "✦ LUNAR HUB ✦"
+MiniBar.TextColor3 = Color3.fromRGB(240, 240, 240)
+MiniBar.Font = Enum.Font.GothamBold
+MiniBar.TextSize = 12
+MiniBar.BorderSizePixel = 0
+MiniBar.Visible = false
+MiniBar.Active = true
+MiniBar.Parent = ScreenGui
+
+local MiniCorner = Instance.new("UICorner")
+MiniCorner.CornerRadius = UDim.new(0, 8)
+MiniCorner.Parent = MiniBar
+
+local MiniStroke = Instance.new("UIStroke")
+MiniStroke.Color = Color3.fromRGB(128, 0, 255)
+MiniStroke.Thickness = 1.5
+MiniStroke.Parent = MiniBar
+
+MiniBar.MouseEnter:Connect(function()
+    MiniBar.BackgroundColor3 = Color3.fromRGB(30, 20, 50)
+    MiniStroke.Color = Color3.fromRGB(255, 0, 127)
+end)
+MiniBar.MouseLeave:Connect(function()
+    MiniBar.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+    MiniStroke.Color = Color3.fromRGB(128, 0, 255)
+end)
+
+-- Arrastar minibar
+local miniDragging, miniDragStart, miniStartPos, miniWasDragged = false, nil, nil, false
+MiniBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        miniDragging = true
+        miniWasDragged = false
+        miniDragStart = input.Position
+        miniStartPos = MiniBar.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if miniDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - miniDragStart
+        if math.abs(delta.X) > 3 or math.abs(delta.Y) > 3 then
+            miniWasDragged = true
+        end
+        MiniBar.Position = UDim2.new(
+            miniStartPos.X.Scale, miniStartPos.X.Offset + delta.X,
+            miniStartPos.Y.Scale, miniStartPos.Y.Offset + delta.Y
+        )
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        miniDragging = false
+    end
+end)
+
+-- ─── DRAG DO PAINEL PRINCIPAL ───
+local dragging, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true dragStart = input.Position startPos = MainFrame.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+end)
+
+-- ─── TOGGLE UI (minimizar/restaurar) ───
+local OriginalPos = nil
+local function toggleUI()
+    if MainFrame.Visible then
+        -- MINIMIZAR
+        OriginalPos = MainFrame.Position
+        MainFrame.Visible = false
+
+        -- Coloca a minibar na posição horizontal central do painel
+        MiniBar.Position = UDim2.new(
+            OriginalPos.X.Scale,
+            OriginalPos.X.Offset + (MainFrame.AbsoluteSize.X / 2 - 90),
+            OriginalPos.Y.Scale,
+            OriginalPos.Y.Offset
+        )
+        MiniBar.Visible = true
+    else
+        -- RESTAURAR
+        MainFrame.Visible = true
+        if OriginalPos then MainFrame.Position = OriginalPos end
+        MiniBar.Visible = false
+    end
+end
+
+MinBtn.MouseButton1Click:Connect(toggleUI)
+
+MiniBar.MouseButton1Click:Connect(function()
+    if not miniWasDragged then
+        toggleUI()
+    end
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    ScreenGui.Enabled = false task.wait(0.5) ScreenGui.Enabled = true
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then toggleUI() end
+end)
+
+-- ─── ABAS ───
+local TabList = Instance.new("Frame")
+TabList.Size = UDim2.new(0, 130, 1, -42)
+TabList.Position = UDim2.new(0, 8, 0, 36)
+TabList.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+TabList.BorderSizePixel = 0
+TabList.Parent = MainFrame
+local TabListCorner = Instance.new("UICorner") TabListCorner.CornerRadius = UDim.new(0, 6) TabListCorner.Parent = TabList
+
+local TabListLayout = Instance.new("UIListLayout")
+TabListLayout.Padding = UDim.new(0, 4)
+TabListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+TabListLayout.Parent = TabList
+local TabPad = Instance.new("UIPadding")
+TabPad.PaddingTop = UDim.new(0, 6) TabPad.PaddingLeft = UDim.new(0, 6) TabPad.PaddingRight = UDim.new(0, 6)
+TabPad.Parent = TabList
+
+local ContentContainer = Instance.new("Frame")
+ContentContainer.Size = UDim2.new(1, -152, 1, -44)
+ContentContainer.Position = UDim2.new(0, 144, 0, 36)
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Parent = MainFrame
+
+local Tabs = {}
+
+local function createTab(name)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 28)
+    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(180, 180, 190)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 12
+    btn.BorderSizePixel = 0
+    btn.Parent = TabList
+    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 4) c.Parent = btn
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, 0, 1, 0)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(128, 0, 255)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.Visible = false
+    scroll.Parent = ContentContainer
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 6)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = scroll
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
+    end)
+
+    Tabs[name] = { Button = btn, Frame = scroll }
+
+    btn.MouseButton1Click:Connect(function()
+        for _, t in pairs(Tabs) do
+            t.Frame.Visible = false
+            t.Button.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+            t.Button.TextColor3 = Color3.fromRGB(180, 180, 190)
+        end
+        scroll.Visible = true
+        btn.BackgroundColor3 = Color3.fromRGB(128, 0, 255)
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    end)
+    return scroll
+end
+
+local function createToggle(parent, text, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -6, 0, 30)
+    frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    frame.BorderSizePixel = 0
+    frame.Parent = parent
+    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 4) c.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -60, 1, 0)
+    label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(220, 220, 230)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 40, 0, 20)
+    btn.Position = UDim2.new(1, -48, 0.5, -10)
+    btn.BackgroundColor3 = default and Color3.fromRGB(128, 0, 255) or Color3.fromRGB(45, 45, 55)
+    btn.Text = default and "ON" or "OFF"
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.BorderSizePixel = 0
+    btn.Parent = frame
+    local bc = Instance.new("UICorner") bc.CornerRadius = UDim.new(0, 4) bc.Parent = btn
+
+    local state = default
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(128, 0, 255) or Color3.fromRGB(45, 45, 55)
+        btn.Text = state and "ON" or "OFF"
+        if callback then callback(state) end
+    end)
+    return frame
+end
+
+local function createSlider(parent, text, min, max, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -6, 0, 44)
+    frame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    frame.BorderSizePixel = 0
+    frame.Parent = parent
+    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 4) c.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 18)
+    label.Position = UDim2.new(0, 10, 0, 4)
+    label.BackgroundTransparency = 1
+    label.Text = text .. ": " .. default
+    label.TextColor3 = Color3.fromRGB(220, 220, 230)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, -20, 0, 8)
+    bar.Position = UDim2.ne
